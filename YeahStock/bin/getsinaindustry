@@ -1,0 +1,57 @@
+#!/usr/bin/perl
+
+use strict;
+use Mojo::JSON qw(to_json from_json);
+use REST::Client;
+use Encode;
+use Data::Dumper;
+
+my $url = 'http://vip.stock.finance.sina.com.cn/q/view/newSinaHy.php';
+my $sinaIndustry;
+
+my $client = REST::Client->new();
+$client->addHeader('charset', 'UTF-8');
+$client->GET($url);
+
+if ($client->responseCode() ne 200) {
+    print("ERROR: get data failed, " . $client->responseContent());
+    return;
+}
+
+$sinaIndustry = $client->responseContent();
+$sinaIndustry =~ s/^.+\{/\{/;
+$sinaIndustry = toCharset($sinaIndustry, 'utf-8');
+$sinaIndustry = from_json($sinaIndustry);
+
+my $hashData;
+# 将逗号分割的数据转为数组
+foreach my $key( keys(%$sinaIndustry)) {
+    my @arr = split(/\s*,\s*/, $sinaIndustry->{$key});
+    $hashData->{$key} = [@arr];
+}
+
+#my $xx = join ', ', $hashData->{'new_yqyb'};
+#print($xx . "\n");
+print(Dumper($hashData) ."\n");
+
+
+
+
+
+
+
+# 将 GBK 编码的内容转码为 UTF-8
+sub toCharset {
+    my ($content, $charset) = @_;
+    if (not defined($charset)) {
+        $charset = 'utf-8';
+    }
+
+    if (not defined($content)) {
+        return $content;
+    }
+
+    $content = Encode::encode($charset, Encode::decode('gbk', $content));
+
+    return $content;
+}

@@ -1,0 +1,38 @@
+#!/usr/bin/perl
+
+my $module = $ARGV[0];
+my $cpanUrl = 'https://metacpan.org/pod/';
+my ($pid, $pipe, $downloadUrl);
+my $savePkgPath = '/root/github/Perl/install-pkg' if (not defined($ARGV[1]) or $ARGV[1] eq '');
+
+if (not defined($module) or $module eq '') {
+    print("usage: pminstall <your_module_name> [<save_pkg_path>]\n");
+    exit(1);
+}
+
+$cpanUrl = $cpanUrl . $module;
+
+print("module's $module webpage is $cpanUrl\n");
+if ($pid = open($pipe, "wget -v --progress=dot --no-check-certificate --output-document=-  $cpanUrl |")) {
+    my $line;
+    while($line = readline($pipe)) {
+        if ($line =~ /.*itemprop\s*=\s*\"downloadUrl\".*href\s*=\"(.+)\"/) {
+            $downloadUrl = $1;
+            last;
+        }
+    }
+
+    waitpid($pid, 0);
+    print("exitCode is: $?\n");
+}
+
+print("Module $module downloadUrl is $downloadUrl\n");
+
+if (not defined($downloadUrl) or $downloadUrl eq '') {
+    print("download $module failed, download url is undefined.\n");
+    exit(1);
+}
+
+eval {
+    `wget -v --progress=dot --no-check-certificate -P $savePkgPath $cpanUrl`
+}
