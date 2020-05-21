@@ -1,0 +1,165 @@
+#!/user/bin/perl
+
+use FindBin;
+use lib "$FindBin::Bin/../lib/perl-lib/lib/perl5";
+use lib "$FindBin::Bin/../lib";
+
+use strict;
+use GetOpt::Long;
+use SubSysInfo;
+use ServerAdapter;
+use Utils;
+
+use File::Path;
+use IO::File;
+use XML::Simple qw(:strict);
+use REST::Client;
+
+sub usage {
+    my $pname = $FindBin::Script;
+
+    # 需要的参数：subsyspath, version
+
+    print(
+"       Usage: $pname --subsyspath <subsys path> --version <version> --pdir <parent directory to save jar> [--url <nexus repo url>] [--groupid <groupId>] [--artifactid <artifactId>] [-v|--verbose]\n"
+    );
+    print("       subsys path: subsys path in the data directory, example:ATM/ATMP\n");
+    print("       version:  versoin name\n");
+    exit(1);
+}
+
+sub main {
+    my ( $isHelp, $subSysPath, $version, $pDir, $url, $isVerbose, $groupId, $artifactId );
+    $isVerbose = 0;
+
+    GetOptions(
+        'v|verbose'    => \$isVerbose,
+        'help'         => \$isHelp,
+        'subsyspath:s' => \$subSysPath,
+        'version:s'    => \$version,
+        'pdir:s'       => \$pDir,
+        'url:s'        => \$url,
+        'groupid:s'    => \$groupId,
+        'artifactid:s' => \$artifactId
+    );
+
+    my $subSysInfo = SubSysInfo::parse( $subSysPath, $version );
+    my $subSysConf = $subSysInfo->{subsysconf};
+    my $fileName   = 'maven-metadata.xml';
+    $url        = $subSysConf->getConfig('nexus.repo')       if ( not defined($url) );
+    $groupId    = $subSysConf->getConfig('nexus.groupid')    if ( undef($groupId) );
+    $artifactId = $subSysConf->getConfig('nexus.artifactid') if ( undef($artifactId) );
+
+    usage() if ( not defined($subSysPath) or not defined($version) or not defined($url) or undef($groupId) or undef($artifactId) );
+    if ( $pDir ne 'appsync' and $pDir ne 'project' and $pDir ne 'mirror' and $pDir ne 'appbuild' ) {
+        print("ERROR: pdir '$pDir' is invalid, valid pdir is appsync|mirror|appbuild|version.\n");
+        usage();
+    }
+
+    $groupId =~ s/\./\//g;
+    $url =~ s/\/$//;
+    $version = $version . '-SNAPSHOT' if ( index( $version, 'SNAPSHOT' ) lt 0 );
+    $url = "$url/$groupId/$artifactId/$version";
+    my $metadataUrl = "$url/$fileName";
+    my $isSuccess = downloadFile( $metadataUrl, $pDir, $fileName );
+    if ( not $isSuccess ) {
+        print("ERROR: download file $fileName failed.\n");
+        Utils::setErrFlag();
+    }
+
+    my $snapshotVersion = getSnapshotVersion("$pDir/$fileName");
+    print("INFO: get file $fileName succeed.\n");
+
+    $fileName = "$artifactId-$snapshotVersion.jar";
+    print("INFO: downloading file $fileName  from $url...\n");
+
+    my $jarUrl = "$url/$fileName";
+    $isSuccess = downloadFile( $jarUrl, $pDir, $fileName );
+    if ( not $isSuccess ) {
+        print("ERROR: download file $file failed.\n");
+        Utils::setErrFlag();
+    }
+
+    Utils::exitWithFlag();
+}
+
+# 根据 snapshot 的 maven-metadata.xml文件得到版本后缀
+# 输入参数：
+# file maven-metadata.xml的完整路径
+#
+# <metadata modelVersion="1.1.0">
+#   <groupId>com.techsure</groupId>
+#   <artifactId>balantflow-module-deploy</artifactId>
+#   <version>0.1.7.2-SNAPSHOT</version>
+#   <versioning>
+#     <snapshot>
+#         <timestamp>20190416.023350</timestamp>
+#         <buildNumber>35</buildNumber>
+#     </snapshot>
+#     <lastUpdated>20190416023350</lastUpdated>
+#     <snapshotVersions>
+#         <snapshotVersion>...</snapshotVersion>
+#         <snapshotVersion>
+#             <extension>pom</extension>
+#             <value>0.1.7.2-20190416.023350-35</value>
+#             <updated>20190416023350</updated>
+#         </snapshotVersion>
+#     </snapshotVersions>
+#   </versioning>
+# </metadata>
+sub getSnapshotVersion {
+    my $file;
+
+    if ( $file !~ '\.xml$' ) {
+        print("ERROR: parser failed, file is not xml.\n");
+        return undef;
+    }
+
+    use Data::Dumper;
+    my $mvnMetaData = XMLin($flie);
+    print( Dumper($mvnMetaData) );
+
+    return $mvnMetaData->{versioning}->{snapshotVersions}->{snapshotVersion}->[1]->{value};
+}
+
+# 输入参数：
+# url  下载文件的url
+# pDir 存放文件的目录
+# fileName 下载后保存文件的文件名
+# 返回值：
+# 成功：1，失败：0
+sub downloadFile {
+    my ( $url, $pDir, $fileName ) = $_;
+    $fileName = substr( $url, rindex( $url, "\/" ) + 1 ) if ( not defined($fileName) );
+
+    if ( not $pDir or not $url or not $fileName ) {
+        print("ERROR: argument url or pDir or fileName is undefind.\n");
+        return 0;
+    }
+
+    my $success = 1;
+    my $client  = REST::Client->new();
+    my $headers = {
+        'Content-type' => 'application/octet-stream',
+        'Accept'       => 'application/octet-stream'
+    };
+
+    $client->getUseragent()->ssl_opts( { verify_hostname => 0, SSL_verify_mode => 'SSL_VERIFY_NONE' } );
+    $client->setFollow(1);
+    $client->setContentFile("$pDir/$fileName");
+    $client->GET( $nexusUrl, $headers );
+
+    if ( $client->responseCode() eq 200 ) {
+        print("INFO: download file $fileName succeed.\n");
+    }
+    else {
+        my $responseContent = $client->responseContent();
+        my $responseCode    = $client->responseCode();
+        print("ERROR: download file $fileName failed, responseContent: $responseContent, responseCode: $responseCode.\n");
+        $success = 0;
+    }
+
+    return $success;
+}
+
+main();

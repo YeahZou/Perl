@@ -1,0 +1,23 @@
+#!/usr/bin/perl
+
+my $pwd  = '/home/app/';
+my @dirs = ($pwd);
+my ( $dir, $file );
+
+while ( $dir = pop(@dirs) ) {
+    local *DH;
+    if ( !opendir( DH, $dir ) ) {
+        print("Cannot open dir $dir : $!");
+        next;
+    }
+
+    foreach ( readdir(DH) ) {
+        if ( $_ eq '.' || $_ eq '..' ) {
+            next;
+            print("dir is ./ ..");
+        }
+        print("now directory is $_\n absolute dir is $pwd$_\n");
+    }
+
+}
+

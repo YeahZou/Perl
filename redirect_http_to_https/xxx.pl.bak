@@ -1,0 +1,196 @@
+#!/usr/bin/perl
+
+use FindBin;
+use lib "$FindBin::Bin/../lib/perl-lib/lib/perl5";
+use lib "$FindBin::Bin/../lib";
+
+use strict;
+use Utils;
+use Logger;
+use Getopt::Long;
+use REST::Client;
+use Data::UUID;
+use URI::Escape;
+use Digest::SHA qw(hmac_sha1_base64);
+use Data::Dumper;
+use Mojo::JSON qw(to_json from_json);
+
+sub usage {
+    my $pname = $FindBin::Script;
+
+    print("Usage: $pname [-h|--help] --host <host url> --action <action api> --ak <AccessKeyId> --sk <Access Key Secret>\n");
+    exit(1);
+}
+
+sub main {
+
+    # API 默认参数
+    my $PARAM_CONN_TIMEOUT = 3;
+    my $PARAM_READ_TIMEOUT = 10000;
+    my $PARAM_RESP_FORMAT  = 'JSON';
+    my $PARAM_VERSION      = '20151201';
+
+    my ( $host, $action, $ak, $sk );
+    my $params;
+    GetOptions(
+        'host:s'   => \$host,
+        'action:s' => \$action,
+        'ak:s'     => \$ak,
+        'sk:s'     => \$sk,
+        '<>'       => sub {
+            my $kv = shift(@_);
+            if ( $kv =~ /^(.+?)=(.+?)$/ ) {
+                $params->{$1} = $2;
+            }
+        }
+    );
+
+    usage() if ( not defined($host) or not defined($action) );
+    $host =~ s/\/$//;
+
+    $ak = ServerAdapter::getSysConf('edas.ak') if ( not defined($ak) );
+    $sk = ServerAdapter::getSysConf('edas.sk') if ( not defined($sk) );
+
+    if ( not defined($ak) or not defined($sk) ) {
+        print("ERROR: parameter ak or sk is undefined.\n");
+        exit(1);
+    }
+
+    ############
+    #测试数据
+    #$params->{'appName'}        = 'myApp';
+    #$params->{'description'}    = 'myApp-description';
+    #$params->{'regionId'}       = 'cn-baijing';
+    #$params->{'buildPackId'}    = 'myContainerVersion';
+    #$params->{'healthCheckURL'} = 'http://192.168.0.22:8080/xxx';
+    #$params->{'ecsId'}          = 'myApp';
+    ############
+
+    $params->{'Action'}           = $action;
+    $params->{'Version'}          = $PARAM_VERSION;
+    $params->{'AccessKeyId'}      = $ak;
+    $params->{'Timestamp'}        = getTimestamp();
+    $params->{'SignatureMethod'}  = 'HMAC-SHA1';
+    $params->{'SignatureVersion'} = '1.0';
+    $params->{'SignatureNonce'}   = getUUID();
+    $params->{'Format'}           = $PARAM_RESP_FORMAT;
+    $params->{'Signature'}        = computeSignature( 'POST', $params, $sk );
+
+    #print("\nParams is :" . Dumper($params) . "\n");
+    $params = encodeURLMap($params);
+    my $client = REST::Client->new();
+
+	print("INFO: connect to $host" . "$action, please wait ...");
+    $client->addHeader( 'Content-type', 'application/x-www-form-urlencoded' );
+    $client->setTimeout($PARAM_CONN_TIMEOUT);
+    $client->setFollow(1);
+    $client->POST( $host . $action, $client->buildQuery($params) );
+
+    my $isSuccess = 1;
+    if ( $client->responseCode() eq 200 ) {
+        my $ret = $client->responseContent();
+        $ret = from_json($ret);
+
+        # JSON 中的 true 被转为1
+        if ( $ret->{"success"} ne 1 ) {
+            $isSuccess = 0;
+        }
+    }
+    elsif ( $client->responseCode() ge 300 and  $client->responseCode() lt 400) {
+    	if (defined($client->responseHeader('Location'))) {
+    		my $location = $client->responseHeader('Location');
+    		print("INFO: Redirect to location: $location ...");
+    		
+    		$client->POST( $location, $client->buildQuery($params) );
+    		if ($client->responseCode() eq 200) {
+    			my $ret = $client->responseContent();
+		        $ret = from_json($ret);
+		
+		        # JSON 中的 true 被转为1
+		        if ( $ret->{"success"} ne 1 ) {
+		            $isSuccess = 0;
+		        }
+    		} else {
+    			$isSuccess = 0;
+    		}
+    	} else {
+    		$isSuccess = 0;
+    	}
+    }
+    else {
+        $isSuccess = 0;
+    }
+    
+    if ( $isSuccess eq 0 ) {
+        print( 'ERROR:' . $client->responseContent() . "\n" );
+        Utils::setErrFlag();
+    }
+    else {
+        print("SUCCESS: run action $action success.\n");
+    }
+
+    Utils::exitWithFlag();
+}
+
+sub getTimestamp {
+    my ( $sec, $min, $hour, $mday, $mon, $year, $wday, $yday, $isdst ) = gmtime();
+    my $timestamp = sprintf( "%04d-%02d-%02dT%02d:%02d:%02dZ", $year + 1900, $mon + 1, $mday, $hour, $min, $sec );
+
+    return $timestamp;
+}
+
+sub getUUID {
+    my $ug = Data::UUID->new;
+    return lc( $ug->create_str() );
+}
+
+sub computeSignature {
+    my ( $method, $params, $sk ) = @_;
+    my @sortedKeys               = sort( keys %$params );
+    my $i                        = 0;
+    my $canonicalizedQueryString = '';
+    my $stringToSign             = $method . '&%2F&';
+
+    foreach my $key (@sortedKeys) {
+        my $value = $params->{$key};
+
+        #print("Key: $key, Value: $value\n");
+        if ( $i ne 0 ) {
+            $canonicalizedQueryString = $canonicalizedQueryString . '&';
+        }
+        $canonicalizedQueryString = $canonicalizedQueryString . encodeURL($key) . '=' . encodeURL($value);
+
+        $i++;
+    }
+
+    $stringToSign = $stringToSign . encodeURL($canonicalizedQueryString);
+    return base64( $stringToSign, $sk . '&' );
+}
+
+sub encodeURLMap {
+    my ($params) = @_;
+    my $ret = {};
+    foreach my $item ( keys %$params ) {
+        $ret->{ encodeURL($item) } = encodeURL( $params->{$item} );
+    }
+
+    return $ret;
+}
+
+sub encodeURL {
+    my ($str) = @_;
+    uri_escape_utf8($str);
+}
+
+sub base64 {
+    my ( $data, $key ) = @_;
+    my $digest = hmac_sha1_base64( $data, $key );
+
+    while ( length($digest) % 4 ) {
+        $digest .= '=';
+    }
+    return $digest;
+}
+
+main();
+
