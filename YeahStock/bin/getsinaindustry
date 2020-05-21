@@ -1,0 +1,117 @@
+#!/usr/bin/perl
+
+use strict;
+use FindBin;
+use lib "$FindBin::Bin/../lib";
+use JSON::Parse qw(parse_json);
+use REST::Client;
+use Encode;
+use Data::Dumper;
+use Mojo::JSON qw(from_json to_json);
+
+# custom lib
+use Util;
+
+my $url = 'http://vip.stock.finance.sina.com.cn/q/view/newSinaHy.php';
+#http://vip.stock.finance.sina.com.cn/quotes_service/api/json_v2.php/Market_Center.getHQNodeData?page=1&num=62&sort=symbol&asc=1&node=new_jrhy&symbol=&_s_r_a=init
+my $stockUrl = 'http://vip.stock.finance.sina.com.cn/quotes_service/api/json_v2.php/Market_Center.getHQNodeData?page=1&num=62&sort=symbol&asc=1&_s_r_a=init';
+my $sinaIndustry;
+
+my $client = REST::Client->new();
+#$client->addHeader('charset', 'UTF-8');
+#$client->GET($url);
+
+#if ($client->responseCode() ne 200) {
+#    print("ERROR: get data failed, " . $client->responseContent());
+#    return;
+#}
+
+#$sinaIndustry = $client->responseContent();
+#$sinaIndustry =~ s/^.+\{/\{/;
+#$sinaIndustry = toCharset($sinaIndustry, 'utf-8');
+#$sinaIndustry = from_json($sinaIndustry);
+
+#my $hashData;
+# 将逗号分割的数据转为数组
+#foreach my $key( keys(%$sinaIndustry)) {
+#    my @arr = split(/\s*,\s*/, $sinaIndustry->{$key});
+#    $hashData->{$key} = [@arr];
+#}
+
+getStocksByIndustryName($stockUrl, 'new_jrhy');
+
+# 获取新浪板块列表
+# 参数：
+# 1. url，获取板块列表的url
+sub getSinaIndustry {
+    my ($url) = @_;
+    
+    my $ret = GET($url, 'text');
+    $ret =~ s/^.+\{/\{/;
+    DEBUG($ret);
+}
+
+# 获取板块下的所有股票列表
+# 参数：
+# 1. url，根据板块名称获取股票列表的url
+# 2. indName 板块名称
+sub getStocksByIndustryName {
+    my ($url, $indName) = @_;
+    if (not defined($indName)) {
+        return;
+    }
+
+    my $url = $url . '&node=' .$indName;
+    my $stockList = GET($url, 'text');
+    $stockList =~ s/^\[\{//;
+    $stockList =~ s/\}\]$//;
+    my @stockList = split(/\},\{/, $stockList);
+    my @stocks = ();
+    for (my $i = 0; $i < scalar(@stockList); $i++) {
+        @{$stocks[$i]} = split(/,/, $stockList[$i]);
+    }
+    DEBUG("stock list of industry $indName: " . $stockList[0] ."\n". to_json($stocks[0]));
+}
+
+# 模拟 GET 请求
+# 参数：
+# 1.  url, 请求的url
+# 2. contentType, 返回的数据类型，不指定则返回json格式
+sub GET {
+    my ($url, $contentType) = @_;
+
+    $client->addHeader('Content-Type', ' text/plain; charset=utf-8');
+    $client->GET($url);
+    if ($client->responseCode() ne 200) {
+        die("ERROR: get data from $url failed, " . $client->responseContent() . "\n");
+    }
+
+    $contentType = 'json' if (not defined($contentType));
+    my $content = $client->responseContent();
+    $content = toCharset($content);
+
+   # DEBUG($content);
+    if ($contentType eq 'json') {
+        $content = parse_json($content);
+    }
+
+    return $content;
+
+}
+
+
+# 将 GBK 编码的内容转码为 UTF-8
+sub toCharset {
+    my ($content, $charset) = @_;
+    if (not defined($charset)) {
+        $charset = 'utf-8';
+    }
+
+    if (not defined($content)) {
+        return $content;
+    }
+
+    $content = Encode::encode($charset, Encode::decode('gbk', $content));
+
+    return $content;
+}
